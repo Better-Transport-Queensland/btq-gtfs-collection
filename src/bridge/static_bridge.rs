@@ -6,7 +6,7 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime};
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, future::try_join_all};
 use gtfs_structures::FeedInfo;
 use rayon::prelude::*;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction, postgres::types::PgInterval};
@@ -15,6 +15,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
+use tracing::{Instrument, debug, info, instrument};
 
 #[derive(Debug)]
 pub struct GtfsDbModel {
@@ -29,7 +30,7 @@ pub struct GtfsDbModel {
     pub feed_info: ReceiverStream<db::types::FeedInfo>,
 }
 
-fn convert<T, U>(items: Vec<T>, chunk_size: usize) -> UnboundedReceiver<U>
+fn convert<T, U>(label: &'static str, items: Vec<T>, chunk_size: usize) -> UnboundedReceiver<U>
 where
     T: ToDB<U> + Send + Sync + Clone + 'static,
     U: Send + Sync + 'static,
@@ -50,54 +51,96 @@ where
                 }
             }
         });
+        debug!(%label, "Finished converting for db.");
     });
 
     receiver
 }
 
-async fn spawn_stream_inserter<T: InsertDB + Send + Sync + 'static>(
-    tx: &mut PgConnection,
+async fn stream_insert<T: InsertDB + Send + Sync + 'static>(
+    label: &'static str,
+    db: &db::Db,
     mut rx: UnboundedReceiver<T>,
-)
-//-> JoinHandle<()>
-{
-    // tokio::spawn(async move {
-    while let Some(item) = rx.recv().await {
-        item.insert(&mut *tx).await.unwrap();
-    }
-    // })
+) -> Result<JoinHandle<()>> {
+    debug!(%label, "Starting DB insert.");
+    let mut tx = db.0.begin().await?;
+    Ok(tokio::task::spawn(async move {
+        while let Some(item) = rx.recv().await {
+            item.insert(&mut *tx).await.unwrap();
+        }
+        info!(%label, "Finished DB insert.");
+    }))
 }
 
 impl StaticGtfs {
     pub async fn insert_db(self, db: db::Db) -> Result<()> {
+        async fn barrier(handles: &mut Vec<JoinHandle<()>>) -> Result<Vec<()>> {
+            Ok(try_join_all(handles).await?)
+        }
+
+        async fn bridge<U: InsertDB + 'static, T: Clone + Send + Sync + ToDB<U>>(
+            futures: &mut Vec<JoinHandle<()>>,
+            db: &db::Db,
+            label: &'static str,
+            input: Option<Result<Vec<T>, gtfs_structures::Error>>,
+        ) -> Result<()>
+        where
+            T: Send + 'static,
+        {
+            let Some(data) = input else {
+                return Ok(());
+            };
+
+            futures.push(stream_insert(label, db, convert(label, data?, 1024)).await?);
+
+            Ok(())
+        }
+
+        info!("Beginning Static Bridge");
+
+        let mut futures = Vec::new();
+
+        // Phase 1:
+        // agencies, calendar, shapes, feedinfo
+        info!("Starting Static Bridge Phase 1");
+        bridge(&mut futures, &db, "agencies", Some(self.raw_gtfs.agencies)).await?;
+        bridge(&mut futures, &db, "calendar", self.raw_gtfs.calendar).await?;
+        bridge(&mut futures, &db, "shapes", self.raw_gtfs.shapes).await?;
+        bridge(&mut futures, &db, "feed_info", self.raw_gtfs.feed_info).await?;
+        barrier(&mut futures).await?;
+        info!("Completed Static Bridge Phase 1");
+
+        // Phase 2:
+        // stops, routes, calendar_dates
+        info!("Starting Static Bridge Phase 2");
+        bridge(&mut futures, &db, "stops", Some(self.raw_gtfs.stops)).await?;
+        bridge(&mut futures, &db, "routes", Some(self.raw_gtfs.routes)).await?;
+        bridge(
+            &mut futures,
+            &db,
+            "calendar_dates",
+            self.raw_gtfs.calendar_dates,
+        )
+        .await?;
+        barrier(&mut futures).await?;
+        info!("Completed Static Bridge Phase 2");
+
+        // Phase 3:
+        // trips
+        info!("Starting Static Bridge Phase 3");
+        bridge(&mut futures, &db, "trips", Some(self.raw_gtfs.trips)).await?;
+        barrier(&mut futures).await?;
+        info!("Completed Static Bridge Phase 3");
+
+        // Phase 4:
+        // update the last updated entry only after everything succeeds
+        info!("Starting Static Bridge Phase 4");
         let mut tx = db.0.begin().await?;
-        self.last_update.insert(&mut *tx);
-        spawn_stream_inserter(&mut *tx, convert(self.raw_gtfs.agencies?, 1024)).await;
+        self.last_update.insert(&mut *tx).await?;
         tx.commit().await.ok();
-        let mut tx = db.0.begin().await?;
-        spawn_stream_inserter(&mut *tx, convert(self.raw_gtfs.stops?, 1024)).await;
-        spawn_stream_inserter(&mut *tx, convert(self.raw_gtfs.routes?, 1024)).await;
-        spawn_stream_inserter(&mut *tx, convert(self.raw_gtfs.trips?, 1024)).await;
-        spawn_stream_inserter(&mut *tx, convert(self.raw_gtfs.stop_times?, 1024)).await;
+        info!("Completed Static Bridge Phase 4");
 
-        if let Some(calendar) = self.raw_gtfs.calendar {
-            spawn_stream_inserter(&mut *tx, convert(calendar?, 1024)).await;
-        }
-
-        if let Some(calendar_dates) = self.raw_gtfs.calendar_dates {
-            spawn_stream_inserter(&mut *tx, convert(calendar_dates?, 1024)).await;
-        }
-
-        if let Some(shapes) = self.raw_gtfs.shapes {
-            spawn_stream_inserter(&mut *tx, convert(shapes?, 1024)).await;
-        }
-
-        if let Some(feed_info) = self.raw_gtfs.feed_info {
-            spawn_stream_inserter(&mut *tx, convert(feed_info?, 1024)).await;
-        }
-
-        tx.commit().await.ok();
-
+        info!("Ending Static Bridge");
         Ok(())
     }
 }

@@ -95,7 +95,7 @@ async fn static_poll(state: State) -> Result<()> {
     let gtfs = load_static_gtfs("./seq_gtfs.zip".to_owned(), last_update).await?;
 
     if let Some(gtfs) = gtfs {
-        gtfs.insert_db(state.db.clone()).await;
+        gtfs.insert_db(state.db.clone()).await?;
     }
 
     Ok(())

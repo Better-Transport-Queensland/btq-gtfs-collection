@@ -3,10 +3,9 @@
 //! Types for database operations.
 //! Should directly map to the schema tables.
 
+use crate::db::queries::*;
 use chrono::{NaiveDate, NaiveDateTime, Timelike, Utc};
 use sqlx::{FromRow, PgConnection, postgres::types::PgInterval};
-
-use crate::db::{self, Db, queries::*};
 
 pub trait InsertDB: Sized + Send + Sync {
     fn insert(
@@ -194,3 +193,35 @@ impl InsertDB for LastUpdate {
         insert_last_update(self, db).await
     }
 }
+
+// pub enum Insertable {
+//     Agency(Agency),
+//     Stop(Stop),
+//     Route(Route),
+//     Trip(Trip),
+//     StopTime(StopTime),
+//     Calendar(Calendar),
+//     CalendarDate(CalendarDate),
+//     Shape(Shape),
+//     FeedInfo(FeedInfo),
+//     LastUpdate(LastUpdate),
+// }
+
+// impl InsertDB for Insertable {
+//     async fn insert(&self, pool: &mut PgConnection) -> Result<(), sqlx::Error> {
+//         match self {
+//             Insertable::Agency(agency) => Agency::insert(agency, pool).await,
+//             Insertable::Stop(stop) => Stop::insert(stop, pool).await,
+//             Insertable::Route(route) => Route::insert(route, pool).await,
+//             Insertable::Trip(trip) => Trip::insert(trip, pool).await,
+//             Insertable::StopTime(stop_time) => StopTime::insert(stop_time, pool).await,
+//             Insertable::Calendar(calendar) => Calendar::insert(calendar, pool).await,
+//             Insertable::CalendarDate(calendar_date) => {
+//                 CalendarDate::insert(calendar_date, pool).await
+//             }
+//             Insertable::Shape(shape) => Shape::insert(shape, pool).await,
+//             Insertable::FeedInfo(feed_info) => FeedInfo::insert(feed_info, pool).await,
+//             Insertable::LastUpdate(last_update) => LastUpdate::insert(last_update, pool).await,
+//         }
+//     }
+// }
