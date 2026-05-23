@@ -810,6 +810,7 @@ dependencies = [
  "csv",
  "futures",
  "gtfs-structures",
+ "itertools 0.14.0",
  "prost",
  "prost-build",
  "prost-types",

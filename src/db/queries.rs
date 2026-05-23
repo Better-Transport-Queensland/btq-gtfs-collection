@@ -7,7 +7,8 @@ use std::path::Path;
 
 use super::types::*;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc};
-use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+use itertools::Itertools;
+use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder, Transaction};
 
 pub async fn insert_agency(agency: &Agency, pool: &mut PgConnection) -> Result<(), sqlx::Error> {
     sqlx::query!(
@@ -185,6 +186,51 @@ pub async fn insert_shape(shape: &Shape, pool: &mut PgConnection) -> Result<(), 
     )
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+pub async fn insert_shapes(
+    shapes: &Vec<Shape>,
+    pool: &mut PgConnection,
+) -> Result<(), sqlx::Error> {
+    // let (ids, pt_lats, pt_lons, pt_sequences): (_, _, _, _) = (
+    //     shapes.iter().map(|s| s.shape_id.as_str()).collect_vec(),
+    //     shapes.iter().map(|s| s.shape_pt_lat).collect_vec(),
+    //     shapes.iter().map(|s| s.shape_pt_lon).collect_vec(),
+    //     shapes.iter().map(|s| s.shape_pt_sequence).collect_vec(),
+    // );
+    // sqlx::query!(
+    //     r#"
+    //     INSERT INTO shapes (
+    //         shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence
+    //     ) SELECT * FROM UNNEST(
+    //         $1::text[],
+    //         $2::float8[],
+    //         $3::float8[],
+    //         $4::integer[]
+    //     )
+    //     "#,
+    //     ids.as_slice(),
+    //     &pt_lats,
+    //     &pt_lons,
+    //     &pt_sequences
+    // )
+    // .execute(pool)
+    // .await?;
+    // Ok(())
+    let mut qb = QueryBuilder::new(
+        "INSERT INTO shapes (shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence) ",
+    );
+
+    qb.push_values(shapes.iter(), |mut b, s| {
+        b.push_bind(&s.shape_id)
+            .push_bind(s.shape_pt_lat)
+            .push_bind(s.shape_pt_lon)
+            .push_bind(s.shape_pt_sequence);
+    });
+
+    qb.build().execute(pool).await?;
+
     Ok(())
 }
 

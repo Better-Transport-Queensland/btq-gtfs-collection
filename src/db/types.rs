@@ -182,6 +182,12 @@ impl InsertDB for Shape {
     }
 }
 
+impl InsertDB for Vec<Shape> {
+    async fn insert(&self, db: &mut PgConnection) -> Result<(), sqlx::Error> {
+        insert_shapes(self, db).await
+    }
+}
+
 impl InsertDB for FeedInfo {
     async fn insert(&self, db: &mut PgConnection) -> Result<(), sqlx::Error> {
         insert_feed_info(self, db).await
