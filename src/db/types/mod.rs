@@ -2,6 +2,7 @@
 //!
 //! Types for database operations.
 //! Directly map to schema tables.
+pub mod realtime_types;
 pub mod static_types;
 
 use chrono::{NaiveDate, NaiveDateTime, Timelike, Utc};
